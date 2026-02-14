@@ -3,173 +3,183 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 
-# --- 1. DATABASE ENGINE ---
-DB_FILE = 'business_pro.db'
+# --- CONFIGURATION FROM ACTIONS.PY ---
+ATT_DICT = {
+    "Employee" : ["employee_id", "first_name" , "last_name" , "address", "city", "country", "phone", "email", "supply_percentage", "total_commission"],
+    "Customer" : ["customer_id","first_name" , "last_name" , "address", "city", "country", "phone", "email", "team", "number_of_players", "balance", "employee_id"],
+    "Discount" : ["discount_id","discount_percent", "max_amount_kit1", "max_amount_kit2", "max_amount_kit3", "number_of_players"],
+    "Item" :["item_id","name", "description", "color", "size", "category", "kit_type", "price", "wholesale_cost", "stock"],
+    "Orders":["order_id","customer_id","order_date", "total_price"], 
+    "Order_Item" : [["order_id", "item_id"],"item_amount"]
+}
 
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    # Δημιουργία των 5 βασικών πινάκων (αφαιρέθηκε ο Order_Item)
-    c.executescript('''
-        CREATE TABLE IF NOT EXISTS Employee (
-            employee_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            first_name TEXT NOT NULL, last_name TEXT NOT NULL, address TEXT NOT NULL,
-            city TEXT NOT NULL, country TEXT NOT NULL, phone TEXT NOT NULL,
-            email TEXT NOT NULL, supply_percentage REAL NOT NULL, total_commission REAL NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS Customer (
-            customer_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            first_name TEXT NOT NULL, last_name TEXT NOT NULL, address TEXT NOT NULL,
-            city TEXT NOT NULL, country TEXT NOT NULL, phone TEXT NOT NULL,
-            email TEXT NOT NULL, team TEXT, number_of_players INTEGER,
-            balance REAL NOT NULL, employee_id INTEGER,
-            FOREIGN KEY (employee_id) REFERENCES Employee(employee_id)
-        );
-        CREATE TABLE IF NOT EXISTS Discount (
-            discount_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            discount_percent REAL NOT NULL, max_amount_kit1 INTEGER NOT NULL,
-            max_amount_kit2 INTEGER NOT NULL, max_amount_kit3 INTEGER NOT NULL,
-            number_of_players INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS Item (
-            item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL, description TEXT NOT NULL, color TEXT,
-            size TEXT, category TEXT NOT NULL, kit_type INTEGER,
-            price REAL NOT NULL, wholesale_cost REAL NOT NULL, stock INTEGER
-        );
-        CREATE TABLE IF NOT EXISTS Orders (
-            order_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            customer_id INTEGER NOT NULL, order_date TEXT NOT NULL,
-            total_price REAL NOT NULL,
-            FOREIGN KEY (customer_id) REFERENCES Customer(customer_id)
-        );
-    ''')
-    conn.commit()
-    conn.close()
+KEY_ATT = list(ATT_DICT.keys())
 
-def run_query(query, params=()):
-    with sqlite3.connect(DB_FILE) as conn:
-        return pd.read_sql_query(query, conn, params=params)
+# Map string names to the integer indices used in actions.py
+TABLE_MAP = {name: i for i, name in enumerate(KEY_ATT)}
 
-def execute_db(query, params=()):
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.cursor().execute(query, params)
-        conn.commit()
+ACTION_MAP = {
+    "Add": 0,
+    "Edit": 1,
+    "Delete": 2
+}
 
-# --- 2. LOGIN SYSTEM ---
-st.set_page_config(page_title="Business ERP", layout="wide")
-init_db()
+def format_value_for_sql(value, is_string=True):
+    """
+    Helper to format values because actions.py uses raw string concatenation.
+    Strings must be wrapped in quotes: 'value'
+    Numbers should remain as is.
+    """
+    if value is None or value == "":
+        return "NULL"
+    if is_string:
+        return f"'{value}'"
+    return value
 
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-
-if not st.session_state.logged_in:
-    st.title("🔒 System Login")
-    user = st.text_input("Username")
-    pw = st.text_input("Password", type="password")
-    if st.button("Login"):
-        if user == "admin" and pw == "1234":
-            st.session_state.logged_in = True
-            st.rerun()
+def get_existing_ids(table_name):
+    """Helper to fetch IDs for Dropdowns in Edit/Delete to make UI usable"""
+    try:
+        con = sqlite3.connect('final.db')
+        # Handle composite key for Order_Item
+        if table_name == "Order_Item":
+            query = "SELECT order_id, item_id FROM Order_Item"
+            df = pd.read_sql_query(query, con)
+            # Create a tuple representation for the dropdown
+            ids = df.apply(lambda x: (x['order_id'], x['item_id']), axis=1).tolist()
         else:
-            st.error("Invalid credentials")
+            pk = ATT_DICT[table_name][0]
+            query = f"SELECT {pk} FROM {table_name}"
+            df = pd.read_sql_query(query, con)
+            ids = df[pk].tolist()
+        con.close()
+        return ids
+    except:
+        return []
 
-# --- 3. MAIN APP ---
-else:
-    st.sidebar.button("Logout", on_click=lambda: st.session_state.update({"logged_in": False}))
+def frontend():
+    st.set_page_config(page_title="DB Actions", layout="centered")
+    st.title("Database Action Input")
+
+    # 1. Select Table
+    table_name = st.selectbox("Select Table", KEY_ATT)
+    table_idx = TABLE_MAP[table_name]
+    columns = ATT_DICT[table_name]
+
+    # 2. Select Action
+    action_name = st.selectbox("Select Action", list(ACTION_MAP.keys()))
+    action_idx = ACTION_MAP[action_name]
+
+    st.divider()
+
+    att_array = []
     
-    # Επιλογή πίνακα (Customer αντί για Customers για αποφυγή σφάλματος)
-    option = st.sidebar.selectbox("Select Table", ["Employee", "Customer", "Item", "Discount", "Orders"])
-    
-    st.title(f"📂 {option} Management")
-    data = run_query(f"SELECT * FROM {option}")
-
-    pk_map = {
-        "Employee": "employee_id", 
-        "Customer": "customer_id", 
-        "Item": "item_id", 
-        "Discount": "discount_id", 
-        "Orders": "order_id"
-    }
-    pk = pk_map[option]
-
-    col1, col2, col3 = st.columns(3)
-
-    # --- ➕ ADD SECTION ---
-    with col1:
-        with st.expander(f"➕ Add New {option}", expanded=True):
-            with st.form(f"add_{option}", clear_on_submit=True):
-                if option == "Orders":
-                    cust_df = run_query("SELECT customer_id, first_name, last_name FROM Customer")
-                    if not cust_df.empty:
-                        c_choice = st.selectbox("Select Customer", cust_df.index, 
-                                              format_func=lambda x: f"{cust_df.iloc[x]['first_name']} {cust_df.iloc[x]['last_name']}")
-                        c_id = int(cust_df.iloc[c_choice]['customer_id'])
-                        date = st.date_input("Order Date", value=datetime.now())
-                        price = st.number_input("Total Price", min_value=0.0)
-                        if st.form_submit_button("Save Order"):
-                            execute_db("INSERT INTO Orders (customer_id, order_date, total_price) VALUES (?,?,?)", (c_id, str(date), price))
-                            st.rerun()
-                    else:
-                        st.warning("Please add a Customer first.")
-                        st.form_submit_button("Save", disabled=True)
+    # --- ADD FUNCTIONALITY ---
+    if action_name == "Add":
+        st.subheader(f"Add new {table_name}")
+        
+        if table_name == "Order_Item":
+            # Order_Item has a weird structure in actions.py: [["order_id", "item_id"],"item_amount"]
+            # But add_to_db expects: att_array[0][0], att_array[0][1], att_array[1]
+            o_id = st.number_input("Order ID", step=1)
+            i_id = st.number_input("Item ID", step=1)
+            amt = st.number_input("Item Amount", step=1)
+            
+            if st.button("Generate Input"):
+                # Structure specific to actions.py add_to_db logic for Order_Item
+                att_array = [[o_id, i_id], amt]
+                return [att_array, table_idx, action_idx]
                 
+        else:
+            # Standard Tables
+            # Skip index 0 (Primary Key is Auto Increment)
+            for col in columns[1:]:
+                # Check data types roughly by name to decide if we need quotes
+                is_text = any(x in col for x in ['name', 'date', 'desc', 'color', 'size', 'city', 'country', 'phone', 'email', 'team', 'address'])
+                
+                if 'price' in col or 'cost' in col or 'balance' in col or 'percent' in col or 'commission' in col:
+                    val = st.number_input(col, step=0.01)
+                    att_array.append(val)
+                elif 'id' in col or 'number' in col or 'stock' in col or 'amount' in col or 'type' in col:
+                    val = st.number_input(col, step=1)
+                    att_array.append(val)
                 else:
-                    # Αυτόματη δημιουργία πεδίων για τους άλλους πίνακες
-                    fields = [c for c in data.columns if c != pk]
-                    new_vals = {}
-                    for f in fields:
-                        if "percentage" in f or "price" in f or "balance" in f:
-                            new_vals[f] = st.number_input(f, value=0.0)
-                        elif "id" in f or "stock" in f or "number" in f or "max" in f:
-                            new_vals[f] = st.number_input(f, value=0, step=1)
-                        else:
-                            new_vals[f] = st.text_input(f)
-                    
-                    if st.form_submit_button("Save"):
-                        cols_sql = ", ".join(new_vals.keys())
-                        placeholders = ", ".join(["?"] * len(new_vals))
-                        execute_db(f"INSERT INTO {option} ({cols_sql}) VALUES ({placeholders})", tuple(new_vals.values()))
-                        st.rerun()
+                    val = st.text_input(col)
+                    # For actions.py, strings MUST be quoted
+                    att_array.append(format_value_for_sql(val, is_string=True))
+            
+            if st.button("Generate Input"):
+                return [att_array, table_idx, action_idx]
 
-    # --- 📝 EDIT SECTION ---
-    with col2:
-        if not data.empty:
-            with st.expander(f"📝 Edit {option}", expanded=True):
-                edit_idx = st.selectbox("Select Row Index", options=data.index, key="edit_sel")
-                row = data.iloc[edit_idx]
+    # --- EDIT FUNCTIONALITY ---
+    elif action_name == "Edit":
+        st.subheader(f"Edit {table_name}")
+        existing_ids = get_existing_ids(table_name)
+        
+        if not existing_ids:
+            st.error("No records found to edit.")
+            return None
+
+        if table_name == "Order_Item":
+            # Special Composite Key Handling
+            selected_id = st.selectbox("Select (Order ID, Item ID)", existing_ids)
+            st.info("Order_Item updates require a very specific nested ID structure.")
+            
+            # actions.py edit_db logic for Order_Item checks att_array[0][0] and [0][1]
+            # Then iterates the rest.
+            new_amount = st.number_input("New Amount (or leave same)", step=1)
+            
+            if st.button("Generate Input"):
+                # Nested ID list as first element, then values
+                att_array = [[selected_id[0], selected_id[1]], new_amount]
+                return [att_array, table_idx, action_idx]
+        else:
+            selected_id = st.selectbox(f"Select {columns[0]} to Edit", existing_ids)
+            att_array.append(selected_id) # ID is always first in att_array for Edit
+            
+            # Loop through rest of columns
+            for col in columns[1:]:
+                is_text = any(x in col for x in ['name', 'date', 'desc', 'color', 'size', 'city', 'country', 'phone', 'email', 'team', 'address'])
                 
-                with st.form(f"edit_form_{option}"):
-                    updated_values = {}
-                    edit_cols = [c for c in data.columns if c != pk]
-                    for c in edit_cols:
-                        val = row[c]
-                        if isinstance(val, (float, int)):
-                            updated_values[c] = st.number_input(f"New {c}", value=val)
-                        else:
-                            updated_values[c] = st.text_input(f"New {c}", value=str(val) if val else "")
-                    
-                    if st.form_submit_button("Update"):
-                        set_clause = ", ".join([f"{c}=?" for c in updated_values.keys()])
-                        execute_db(f"UPDATE {option} SET {set_clause} WHERE {pk}=?", tuple(updated_values.values()) + (int(row[pk]),))
-                        st.rerun()
+                # actions.py supports "noval" to skip updates. 
+                # We will default to "noval" and only change if user enters data.
+                check = st.checkbox(f"Update {col}?", key=f"chk_{col}")
+                
+                if check:
+                    if 'price' in col or 'cost' in col or 'balance' in col or 'percent' in col or 'commission' in col:
+                        val = st.number_input(f"New {col}", step=0.01)
+                        att_array.append(val)
+                    elif 'id' in col or 'number' in col or 'stock' in col or 'amount' in col or 'type' in col:
+                        val = st.number_input(f"New {col}", step=1)
+                        att_array.append(val)
+                    else:
+                        val = st.text_input(f"New {col}")
+                        att_array.append(format_value_for_sql(val, is_string=True))
+                else:
+                    att_array.append("noval")
 
-    # ---  DELETE SECTION ---
-    with col3:
-        if not data.empty:
-            with st.expander(f"🗑️ Delete {option}", expanded=True):
-                del_idx = st.selectbox("Select Row Index", options=data.index, key="del_sel")
-                id_to_del = int(data.iloc[del_idx][pk])
-                if st.button("Confirm Delete", type="primary"):
-                    execute_db(f"DELETE FROM {option} WHERE {pk}=?", (id_to_del,))
-                    st.rerun()
+            if st.button("Generate Input"):
+                return [att_array, table_idx, action_idx]
 
-    # --- TABLE VIEW & KPI ---
-    st.markdown("---")
-    st.subheader(f"Current {option} Records")
-    st.dataframe(data, use_container_width=True)
+    # --- DELETE FUNCTIONALITY ---
+    elif action_name == "Delete":
+        st.subheader(f"Delete from {table_name}")
+        existing_ids = get_existing_ids(table_name)
+        
+        if not existing_ids:
+            st.error("No records found to delete.")
+            return None
 
-    if option == "Orders":
-        # Διόρθωση του σφάλματος NoneType (image_5c1280.png)
-        total_rev = data['total_price'].sum() if not data.empty else 0.0
-        st.metric("Total Revenue", f"€{total_rev:,.2f}")
+        if table_name == "Order_Item":
+            selected_id = st.selectbox("Select (Order ID, Item ID) to Delete", existing_ids)
+            if st.button("Generate Input"):
+                # actions.py expects [[order_id, item_id]] for delete on this table
+                return [[[selected_id[0], selected_id[1]]], table_idx, action_idx]
+        else:
+            selected_id = st.selectbox(f"Select {columns[0]} to Delete", existing_ids)
+            
+            if st.button("Generate Input"):
+                # actions.py expects [id]
+                return [[selected_id], table_idx, action_idx]
+
+    return None
+

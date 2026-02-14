@@ -1,6 +1,21 @@
 import sqlite3
-import classes as cl
 
+
+
+con = sqlite3.connect('final.db')
+cur = con.cursor()
+
+for row in cur.execute(f"SELECT * FROM Employee"):
+    print(row)
+
+con.commit()
+con.close()
+
+
+
+
+
+'''
 con = sqlite3.connect("test_db")
 
 cur  = con.cursor()
@@ -199,4 +214,4 @@ for row in cur.execute("SELECT * FROM Customer"):
     print(row)
 
 print("")
-con.close()
+con.close()'''
