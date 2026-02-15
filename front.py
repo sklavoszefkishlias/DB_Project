@@ -1,9 +1,9 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
-from datetime import datetime
+from db_init import get_query  
 
-# --- CONFIGURATION FROM ACTIONS.PY ---
+
 ATT_DICT = {
     "Employee" : ["employee_id", "first_name" , "last_name" , "address", "city", "country", "phone", "email", "supply_percentage", "total_commission"],
     "Customer" : ["customer_id","first_name" , "last_name" , "address", "city", "country", "phone", "email", "team", "number_of_players", "balance", "employee_id"],
@@ -13,173 +13,250 @@ ATT_DICT = {
     "Order_Item" : [["order_id", "item_id"],"item_amount"]
 }
 
-KEY_ATT = list(ATT_DICT.keys())
 
-# Map string names to the integer indices used in actions.py
-TABLE_MAP = {name: i for i, name in enumerate(KEY_ATT)}
-
-ACTION_MAP = {
-    "Add": 0,
-    "Edit": 1,
-    "Delete": 2
+REPORT_MAP = {
+    "Search Customer (First & Last Name)": 0,
+    "Search Customer by Team": 2,
+    "Search Item by Name": 3,
+    "Filter Items by Price Range": 4,
+    "Search Customers by City (OR)": 5,
+    "Employee Commission Report": 6,
+    "Highest Value Order": 7
 }
 
+KEY_ATT = list(ATT_DICT.keys())
+TABLE_MAP = {name: i for i, name in enumerate(KEY_ATT)}
+ACTION_MAP = {"Add": 0, "Edit": 1, "Delete": 2, "Run Report": 3}
+
+
+
+def run_db_command(sql):
+    try:
+        con = sqlite3.connect('final.db')
+        cur = con.cursor()
+        cur.execute(sql)
+        con.commit()
+        con.close()
+        return True, "Success"
+    except Exception as e:
+        return False, str(e)
+
+def process_crud_action(data):
+
+    if not data: return
+    
+    att_array, table_idx, action_idx = data
+    table_name = KEY_ATT[table_idx]
+    cols = ATT_DICT[table_name]
+    
+    sql = ""
+    
+
+    if action_idx == 0:
+        if table_name == "Order_Item":
+
+            sql = f"INSERT INTO Order_Item (order_id, item_id, item_amount) VALUES ({att_array[0][0]}, {att_array[0][1]}, {att_array[1]})"
+        else:
+
+            vals = ", ".join([str(x) for x in att_array])
+            col_names = ", ".join(cols[1:])
+            sql = f"INSERT INTO {table_name} ({col_names}) VALUES ({vals})"
+
+
+    elif action_idx == 1:
+        if table_name == "Order_Item":
+            sql = f"UPDATE Order_Item SET item_amount = {att_array[1]} WHERE order_id = {att_array[0][0]} AND item_id = {att_array[0][1]}"
+        else:
+            pk_val = att_array[0]
+            updates = []
+
+            for i, val in enumerate(att_array[1:], 1):
+                if val != "noval":
+                    updates.append(f"{cols[i]} = {val}")
+            
+            if not updates:
+                st.warning("No changes detected.")
+                return
+                
+            sql = f"UPDATE {table_name} SET {', '.join(updates)} WHERE {cols[0]} = {pk_val}"
+
+
+    elif action_idx == 2:
+        if table_name == "Order_Item":
+            sql = f"DELETE FROM Order_Item WHERE order_id = {att_array[0][0]} AND item_id = {att_array[0][1]}"
+        else:
+            sql = f"DELETE FROM {table_name} WHERE {cols[0]} = {att_array[0]}"
+
+    if sql:
+        success, msg = run_db_command(sql)
+        if success:
+            st.success(f"Operation Successful on {table_name}!")
+        else:
+            st.error(f"Database Error: {msg}")
+
+
+
 def format_value_for_sql(value, is_string=True):
-    """
-    Helper to format values because actions.py uses raw string concatenation.
-    Strings must be wrapped in quotes: 'value'
-    Numbers should remain as is.
-    """
-    if value is None or value == "":
+
+    if value is None or str(value).strip() == "":
         return "NULL"
     if is_string:
         return f"'{value}'"
     return value
 
 def get_existing_ids(table_name):
-    """Helper to fetch IDs for Dropdowns in Edit/Delete to make UI usable"""
+
     try:
         con = sqlite3.connect('final.db')
-        # Handle composite key for Order_Item
         if table_name == "Order_Item":
-            query = "SELECT order_id, item_id FROM Order_Item"
-            df = pd.read_sql_query(query, con)
-            # Create a tuple representation for the dropdown
+            df = pd.read_sql_query("SELECT order_id, item_id FROM Order_Item", con)
             ids = df.apply(lambda x: (x['order_id'], x['item_id']), axis=1).tolist()
         else:
             pk = ATT_DICT[table_name][0]
-            query = f"SELECT {pk} FROM {table_name}"
-            df = pd.read_sql_query(query, con)
+            df = pd.read_sql_query(f"SELECT {pk} FROM {table_name}", con)
             ids = df[pk].tolist()
         con.close()
         return ids
     except:
         return []
 
+
+
 def frontend():
-    st.set_page_config(page_title="DB Actions", layout="centered")
-    st.title("Database Action Input")
+    st.set_page_config(page_title="DB Management System", layout="wide")
+    st.sidebar.title("DB Controls")
+    
 
-    # 1. Select Table
-    table_name = st.selectbox("Select Table", KEY_ATT)
-    table_idx = TABLE_MAP[table_name]
-    columns = ATT_DICT[table_name]
-
-    # 2. Select Action
-    action_name = st.selectbox("Select Action", list(ACTION_MAP.keys()))
+    action_name = st.sidebar.selectbox("Select Action", list(ACTION_MAP.keys()))
     action_idx = ACTION_MAP[action_name]
 
-    st.divider()
 
-    att_array = []
-    
-    # --- ADD FUNCTIONALITY ---
-    if action_name == "Add":
-        st.subheader(f"Add new {table_name}")
+    if action_name == "Run Report":
+        st.header("Database Reports")
+        report_choice = st.selectbox("Choose Report", list(REPORT_MAP.keys()))
+        q_code = REPORT_MAP[report_choice]
         
+
+
+        arr = [] 
+        
+        if q_code == 0:
+            c1, c2 = st.columns(2)
+            fn = c1.text_input("First Name")
+            ln = c2.text_input("Last Name")
+            arr = [format_value_for_sql(fn), format_value_for_sql(ln)]
+            
+        elif q_code in [2, 3]:
+            val = st.text_input("Search Value")
+
+            arr = [format_value_for_sql(val), "''"] 
+            
+        elif q_code == 4:
+            c1, c2 = st.columns(2)
+            min_p = c1.number_input("Min Price", 0.0)
+            max_p = c2.number_input("Max Price", 1000.0)
+            arr = [min_p, max_p]
+            
+        elif q_code == 5:
+            c1, c2 = st.columns(2)
+            city1 = c1.text_input("City 1")
+            city2 = c2.text_input("City 2")
+            arr = [format_value_for_sql(city1), format_value_for_sql(city2)]
+            
+        elif q_code in [6, 7]:
+            arr = []
+
+        if st.button("Run Query"):
+            try:
+                con = sqlite3.connect('final.db')
+                sql_query = get_query(q_code, arr)
+                df = pd.read_sql_query(sql_query, con)
+                con.close()
+                
+                if df.empty:
+                    st.info("No records found.")
+                else:
+                    st.dataframe(df, use_container_width=True)
+            except Exception as e:
+                st.error(f"Query Error: {e}")
+                st.write("Debug info - Array sent:", arr)
+        return
+
+
+    
+    table_name = st.sidebar.selectbox("Select Table", KEY_ATT)
+    table_idx = TABLE_MAP[table_name]
+    columns = ATT_DICT[table_name]
+    
+    st.subheader(f"{action_name} - {table_name}")
+    att_array = []
+
+
+    if action_name == "Add":
         if table_name == "Order_Item":
-            # Order_Item has a weird structure in actions.py: [["order_id", "item_id"],"item_amount"]
-            # But add_to_db expects: att_array[0][0], att_array[0][1], att_array[1]
             o_id = st.number_input("Order ID", step=1)
             i_id = st.number_input("Item ID", step=1)
-            amt = st.number_input("Item Amount", step=1)
-            
-            if st.button("Generate Input"):
-                # Structure specific to actions.py add_to_db logic for Order_Item
-                att_array = [[o_id, i_id], amt]
-                return [att_array, table_idx, action_idx]
-                
+            amt = st.number_input("Amount", step=1)
+            if st.button("Add Record"):
+                process_crud_action([[[o_id, i_id], amt], table_idx, action_idx])
         else:
-            # Standard Tables
-            # Skip index 0 (Primary Key is Auto Increment)
             for col in columns[1:]:
-                # Check data types roughly by name to decide if we need quotes
-                is_text = any(x in col for x in ['name', 'date', 'desc', 'color', 'size', 'city', 'country', 'phone', 'email', 'team', 'address'])
-                
-                if 'price' in col or 'cost' in col or 'balance' in col or 'percent' in col or 'commission' in col:
-                    val = st.number_input(col, step=0.01)
-                    att_array.append(val)
-                elif 'id' in col or 'number' in col or 'stock' in col or 'amount' in col or 'type' in col:
-                    val = st.number_input(col, step=1)
+
+                is_num = any(x in col for x in ['price','cost','balance','percent','commission','id','number','stock','amount','type'])
+                if is_num:
+                    val = st.number_input(col, step=1 if 'id' in col or 'stock' in col else 0.01)
                     att_array.append(val)
                 else:
                     val = st.text_input(col)
-                    # For actions.py, strings MUST be quoted
-                    att_array.append(format_value_for_sql(val, is_string=True))
+                    att_array.append(format_value_for_sql(val))
             
-            if st.button("Generate Input"):
-                return [att_array, table_idx, action_idx]
+            if st.button("Add Record"):
+                process_crud_action([att_array, table_idx, action_idx])
 
-    # --- EDIT FUNCTIONALITY ---
+    # EDIT
     elif action_name == "Edit":
-        st.subheader(f"Edit {table_name}")
-        existing_ids = get_existing_ids(table_name)
-        
-        if not existing_ids:
-            st.error("No records found to edit.")
-            return None
-
-        if table_name == "Order_Item":
-            # Special Composite Key Handling
-            selected_id = st.selectbox("Select (Order ID, Item ID)", existing_ids)
-            st.info("Order_Item updates require a very specific nested ID structure.")
-            
-            # actions.py edit_db logic for Order_Item checks att_array[0][0] and [0][1]
-            # Then iterates the rest.
-            new_amount = st.number_input("New Amount (or leave same)", step=1)
-            
-            if st.button("Generate Input"):
-                # Nested ID list as first element, then values
-                att_array = [[selected_id[0], selected_id[1]], new_amount]
-                return [att_array, table_idx, action_idx]
+        ids = get_existing_ids(table_name)
+        if not ids:
+            st.warning("No records available to edit.")
         else:
-            selected_id = st.selectbox(f"Select {columns[0]} to Edit", existing_ids)
-            att_array.append(selected_id) # ID is always first in att_array for Edit
+            sel_id = st.selectbox("Select ID", ids)
             
-            # Loop through rest of columns
-            for col in columns[1:]:
-                is_text = any(x in col for x in ['name', 'date', 'desc', 'color', 'size', 'city', 'country', 'phone', 'email', 'team', 'address'])
-                
-                # actions.py supports "noval" to skip updates. 
-                # We will default to "noval" and only change if user enters data.
-                check = st.checkbox(f"Update {col}?", key=f"chk_{col}")
-                
-                if check:
-                    if 'price' in col or 'cost' in col or 'balance' in col or 'percent' in col or 'commission' in col:
-                        val = st.number_input(f"New {col}", step=0.01)
-                        att_array.append(val)
-                    elif 'id' in col or 'number' in col or 'stock' in col or 'amount' in col or 'type' in col:
-                        val = st.number_input(f"New {col}", step=1)
-                        att_array.append(val)
+            if table_name == "Order_Item":
+                new_amt = st.number_input("New Amount", step=1)
+                if st.button("Update Record"):
+                    process_crud_action([[[sel_id[0], sel_id[1]], new_amt], table_idx, action_idx])
+            else:
+                att_array.append(sel_id)
+                for col in columns[1:]:
+                    check = st.checkbox(f"Update {col}?", key=f"chk_{col}")
+                    if check:
+                        is_num = any(x in col for x in ['price','cost','balance','percent','commission','id','number','stock','amount','type'])
+                        if is_num:
+                            val = st.number_input(f"New {col}", step=1 if 'id' in col else 0.01)
+                            att_array.append(val)
+                        else:
+                            val = st.text_input(f"New {col}")
+                            att_array.append(format_value_for_sql(val))
                     else:
-                        val = st.text_input(f"New {col}")
-                        att_array.append(format_value_for_sql(val, is_string=True))
-                else:
-                    att_array.append("noval")
+                        att_array.append("noval")
+                
+                if st.button("Update Record"):
+                    process_crud_action([att_array, table_idx, action_idx])
 
-            if st.button("Generate Input"):
-                return [att_array, table_idx, action_idx]
 
-    # --- DELETE FUNCTIONALITY ---
     elif action_name == "Delete":
-        st.subheader(f"Delete from {table_name}")
-        existing_ids = get_existing_ids(table_name)
-        
-        if not existing_ids:
-            st.error("No records found to delete.")
-            return None
-
-        if table_name == "Order_Item":
-            selected_id = st.selectbox("Select (Order ID, Item ID) to Delete", existing_ids)
-            if st.button("Generate Input"):
-                # actions.py expects [[order_id, item_id]] for delete on this table
-                return [[[selected_id[0], selected_id[1]]], table_idx, action_idx]
+        ids = get_existing_ids(table_name)
+        if not ids:
+            st.warning("No records available to delete.")
         else:
-            selected_id = st.selectbox(f"Select {columns[0]} to Delete", existing_ids)
-            
-            if st.button("Generate Input"):
-                # actions.py expects [id]
-                return [[selected_id], table_idx, action_idx]
+            sel_id = st.selectbox("Select ID to Delete", ids)
+            if st.button("Delete Record"):
 
-    return None
+                if table_name == "Order_Item":
+                    payload = [[[sel_id[0], sel_id[1]]] , table_idx, action_idx]
+                else:
+                    payload = [[sel_id], table_idx, action_idx]
+                process_crud_action(payload)
 
+if __name__ == "__main__":
+    frontend()
